@@ -659,58 +659,131 @@ const AdminView = ({ sessionId, departments, clauses, sessions, onSessionCreated
     fetch(`/api/risks?session_id=${sessionId}${selectedDeptId ? `&department_id=${selectedDeptId}` : ''}`).then(res => res.json()).then(setRisks);
   }, [sessionId, selectedDeptId]);
 
-  const handleOrgChartUpload = async () => {
-    if (!orgChartFile) return;
+  const handleOrgChartUpload = async (fileToUpload = orgChartFile) => {
+    if (!fileToUpload) return false;
     const formData = new FormData();
-    formData.append('file', orgChartFile);
-    const res = await fetch('/api/org-chart/upload', {
-      method: 'POST',
-      body: formData
-    });
-    if (res.ok) {
-      alert('조직도 업로드 및 부서 업데이트 완료');
-      setOrgChartFile(null);
-      onOrgUpdated();
+    formData.append('file', fileToUpload);
+    try {
+      const res = await fetch('/api/org-chart/upload', {
+        method: 'POST',
+        body: formData
+      });
+      if (res.ok) {
+        if (fileToUpload === orgChartFile) {
+          alert('조직도 업로드 및 부서 업데이트 완료');
+          setOrgChartFile(null);
+        }
+        onOrgUpdated();
+        return true;
+      } else {
+        alert('조직도 업로드 실패: ' + await res.text());
+        return false;
+      }
+    } catch (e) {
+      alert('조직도 업로드 중 오류 발생: ' + e);
+      return false;
     }
   };
 
-  const handleObUpload = async () => {
-    if (!obFile || !sessionId) return;
+  const handleObUpload = async (fileToUpload = obFile) => {
+    if (!sessionId) {
+      alert('먼저 평가 세션을 생성하거나 선택해주세요.');
+      return false;
+    }
+    if (!fileToUpload) return false;
     const formData = new FormData();
-    formData.append('file', obFile);
+    formData.append('file', fileToUpload);
     formData.append('session_id', sessionId.toString());
-    const res = await fetch('/api/obligations/upload', {
-      method: 'POST',
-      body: formData
-    });
-    if (res.ok) {
-      const data = await res.json();
-      let msg = `${data.count}개의 의무사항이 업로드되었습니다.`;
-      if (data.failedRows && data.failedRows.length > 0) {
-        msg += `\n\n⚠️ 실패한 항목 (${data.failedRows.length}건):\n` + data.failedRows.join('\n');
+    try {
+      const res = await fetch('/api/obligations/upload', {
+        method: 'POST',
+        body: formData
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (fileToUpload === obFile) {
+          let msg = `${data.count}개의 의무사항이 업로드되었습니다.`;
+          if (data.failedRows && data.failedRows.length > 0) {
+            msg += `\n\n⚠️ 실패한 항목 (${data.failedRows.length}건):\n` + data.failedRows.join('\n');
+          }
+          alert(msg);
+          setObFile(null);
+        }
+        return true;
+      } else {
+        alert('의무등록부 업로드 실패: ' + await res.text());
+        return false;
       }
-      alert(msg);
-      setObFile(null);
+    } catch (e) {
+      alert('의무등록부 업로드 중 오류 발생: ' + e);
+      return false;
     }
   };
 
-  const handleRiskUpload = async () => {
-    if (!riskFile || !sessionId) return;
+  const handleRiskUpload = async (fileToUpload = riskFile) => {
+    if (!sessionId) {
+      alert('먼저 평가 세션을 생성하거나 선택해주세요.');
+      return false;
+    }
+    if (!fileToUpload) return false;
     const formData = new FormData();
-    formData.append('file', riskFile);
+    formData.append('file', fileToUpload);
     formData.append('session_id', sessionId.toString());
-    const res = await fetch('/api/risks/upload', {
-      method: 'POST',
-      body: formData
-    });
-    if (res.ok) {
-      const data = await res.json();
-      let msg = `${data.count}개의 리스크가 업로드되었습니다.`;
-      if (data.failedRows && data.failedRows.length > 0) {
-        msg += `\n\n⚠️ 실패한 항목 (${data.failedRows.length}건):\n` + data.failedRows.join('\n');
+    try {
+      const res = await fetch('/api/risks/upload', {
+        method: 'POST',
+        body: formData
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (fileToUpload === riskFile) {
+          let msg = `${data.count}개의 리스크가 업로드되었습니다.`;
+          if (data.failedRows && data.failedRows.length > 0) {
+            msg += `\n\n⚠️ 실패한 항목 (${data.failedRows.length}건):\n` + data.failedRows.join('\n');
+          }
+          alert(msg);
+          setRiskFile(null);
+          // Navigate to 3rd tab individually if desired
+          setActiveSubTab('identification');
+        }
+        return true;
+      } else {
+        alert('리스크 업로드 실패: ' + await res.text());
+        return false;
       }
-      alert(msg);
-      setRiskFile(null);
+    } catch (e) {
+      alert('리스크 업로드 중 오류 발생: ' + e);
+      return false;
+    }
+  };
+
+  const handleExecuteAll = async () => {
+    if (!sessionId) {
+      alert('먼저 평가 세션을 생성하거나 선택해주세요.');
+      return;
+    }
+    
+    // Process in order: OrgChart -> Obligations -> Risks
+    let success = true;
+    if (orgChartFile) {
+      success = await handleOrgChartUpload(orgChartFile);
+      if (success) setOrgChartFile(null);
+    }
+    
+    if (success && obFile) {
+      success = await handleObUpload(obFile);
+      if (success) setObFile(null);
+    }
+    
+    if (success && riskFile) {
+      success = await handleRiskUpload(riskFile);
+      if (success) setRiskFile(null);
+    }
+    
+    if (success && (orgChartFile || obFile || riskFile)) {
+      alert('일괄 업로드 및 실행이 완료되었습니다.');
+      // After execution, navigate to the 3rd tab (의무등록부 & 리스크 식별)
+      setActiveSubTab('identification');
     }
   };
 
@@ -843,30 +916,14 @@ const AdminView = ({ sessionId, departments, clauses, sessions, onSessionCreated
                 ))}
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="grid grid-cols-1 gap-6">
                 <Card className="p-6 bg-stone-50 border-dashed border-2">
-                  <div className="flex justify-between items-center mb-4">
-                    <h4 className="text-sm font-medium">1-2. 조직도 업로드</h4>
-                    <button onClick={() => downloadTemplate('org')} className="text-[10px] text-stone-500 hover:underline flex items-center gap-1">
-                      <Download size={12} /> 템플릿 다운로드
-                    </button>
-                  </div>
-                  <div className="space-y-4">
-                    <label className="flex items-center justify-center gap-2 bg-white border border-stone-200 px-4 py-4 rounded-lg cursor-pointer hover:bg-stone-100 text-sm border-dashed">
-                      <Upload size={16} className="text-stone-400" />
-                      <span className="text-stone-600">{orgChartFile ? orgChartFile.name : '조직도(Excel) 선택'}</span>
-                      <input type="file" className="hidden" onChange={(e) => setOrgChartFile(e.target.files?.[0] || null)} />
-                    </label>
-                    {orgChartFile && (
-                      <button onClick={handleOrgChartUpload} className="w-full bg-stone-900 text-white px-4 py-2 rounded-lg text-sm">업로드 및 부서 동기화</button>
-                    )}
-                  </div>
-                </Card>
-
-                <Card className="p-6 bg-stone-50 border-dashed border-2">
-                  <div className="flex justify-between items-center mb-4">
-                    <h4 className="text-sm font-medium">1-3. 의무등록부 & 리스크 벌크 업로드</h4>
-                    <div className="flex gap-2">
+                  <div className="flex justify-between items-center mb-6">
+                    <h4 className="text-sm font-medium">1-2. 평가 기준 벌크 업로드 (조직도, 의무등록부, 리스크)</h4>
+                    <div className="flex gap-4">
+                      <button onClick={() => downloadTemplate('org')} className="text-[10px] text-stone-500 hover:underline flex items-center gap-1">
+                        <Download size={12} /> 조직도 템플릿
+                      </button>
                       <button onClick={() => downloadTemplate('ob')} className="text-[10px] text-stone-500 hover:underline flex items-center gap-1">
                         <Download size={12} /> 의무 템플릿
                       </button>
@@ -875,27 +932,47 @@ const AdminView = ({ sessionId, departments, clauses, sessions, onSessionCreated
                       </button>
                     </div>
                   </div>
-                  <div className="space-y-3">
-                    <div className="flex gap-2">
-                      <label className="flex-1 flex items-center gap-2 bg-white border border-stone-200 px-3 py-2 rounded-lg cursor-pointer hover:bg-stone-100 text-xs">
-                        <FileText size={14} className="text-stone-400" />
-                        <span className="truncate">{obFile ? obFile.name : '의무등록부 선택'}</span>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div className="space-y-2">
+                      <label className="block text-xs font-mono uppercase text-stone-400">1. 조직도</label>
+                      <label className="flex items-center gap-2 bg-white border border-stone-200 px-3 py-3 rounded-lg cursor-pointer hover:bg-stone-100 text-sm">
+                        <Upload size={16} className="text-stone-400 shrink-0" />
+                        <span className="truncate">{orgChartFile ? orgChartFile.name : '조직도(Excel) 선택'}</span>
+                        <input type="file" className="hidden" onChange={(e) => setOrgChartFile(e.target.files?.[0] || null)} />
+                      </label>
+                    </div>
+                    
+                    <div className="space-y-2">
+                      <label className="block text-xs font-mono uppercase text-stone-400">2. 의무등록부</label>
+                      <label className="flex items-center gap-2 bg-white border border-stone-200 px-3 py-3 rounded-lg cursor-pointer hover:bg-stone-100 text-sm">
+                        <FileText size={16} className="text-stone-400 shrink-0" />
+                        <span className="truncate">{obFile ? obFile.name : '의무등록부(Excel) 선택'}</span>
                         <input type="file" className="hidden" onChange={(e) => setObFile(e.target.files?.[0] || null)} />
                       </label>
-                      {obFile && <button onClick={handleObUpload} className="bg-stone-900 text-white px-3 py-2 rounded-lg text-xs">업로드</button>}
                     </div>
-                    <div className="flex gap-2">
-                      <label className="flex-1 flex items-center gap-2 bg-white border border-stone-200 px-3 py-2 rounded-lg cursor-pointer hover:bg-stone-100 text-xs">
-                        <AlertCircle size={14} className="text-stone-400" />
-                        <span className="truncate">{riskFile ? riskFile.name : '리스크 목록 선택'}</span>
+                    
+                    <div className="space-y-2">
+                      <label className="block text-xs font-mono uppercase text-stone-400">3. 리스크 목록</label>
+                      <label className="flex items-center gap-2 bg-white border border-stone-200 px-3 py-3 rounded-lg cursor-pointer hover:bg-stone-100 text-sm">
+                        <AlertCircle size={16} className="text-stone-400 shrink-0" />
+                        <span className="truncate">{riskFile ? riskFile.name : '리스크(Excel) 선택'}</span>
                         <input type="file" className="hidden" onChange={(e) => setRiskFile(e.target.files?.[0] || null)} />
                       </label>
-                      {riskFile && <button onClick={handleRiskUpload} className="bg-stone-900 text-white px-3 py-2 rounded-lg text-xs">업로드</button>}
                     </div>
                   </div>
-                  <p className="mt-4 text-[10px] text-stone-400 italic">
-                    * ISO 37001 등 표준 요구사항에 맞춘 데이터를 벌크로 등록할 수 있습니다.
-                  </p>
+                  <div className="mt-8 border-t border-stone-200 border-dashed pt-6">
+                    <button 
+                      onClick={handleExecuteAll}
+                      className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-4 rounded-xl font-bold flex items-center justify-center gap-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      disabled={!(orgChartFile || obFile || riskFile)}
+                    >
+                      <CheckCircle2 size={20} /> 설정된 파일 일괄 Execution 및 3.식별 탭으로 이동
+                    </button>
+                    <p className="mt-3 text-center text-xs text-stone-500">
+                      * 파일을 필요한 만큼 선택한 뒤 이 버튼을 누르면 순서대로 업로드한 뒤 식별 탭으로 자동 이동합니다. ISO 37001 등 표준 요구사항에 맞춘 데이터를 벌크로 등록할 수 있습니다.
+                    </p>
+                  </div>
                 </Card>
               </div>
 

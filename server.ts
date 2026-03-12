@@ -205,7 +205,8 @@ async function startServer() {
     },
     filename: (req, file, cb) => {
       const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-      cb(null, uniqueSuffix + "-" + file.originalname);
+      const originalName = Buffer.from(file.originalname, 'latin1').toString('utf8');
+      cb(null, uniqueSuffix + "-" + originalName);
     },
   });
   const upload = multer({ storage });
@@ -357,9 +358,9 @@ async function startServer() {
       let count = 0;
       let failedRows: string[] = [];
       data.forEach((row, index) => {
-        const dept = row['부서'] || row['Department'];
-        const law = row['법령명'] || row['Law'];
-        const content = row['의무내용'] || row['Content'];
+        const dept = row['부서'] || row['Department'] || row['부서명'];
+        const law = row['법령명'] || row['Law'] || row['관련 법령명'];
+        const content = row['의무내용'] || row['Content'] || row['주요 의무 내용'];
         
         if (dept && law && content) {
           const deptRow = getDeptId.get(dept.toString(), dept.toString()) as any;
@@ -401,9 +402,9 @@ async function startServer() {
       let count = 0;
       let failedRows: string[] = [];
       data.forEach((row, index) => {
-        const dept = row['부서'] || row['Department'];
+        const dept = row['부서'] || row['Department'] || row['부서명'];
         const clause = row['조항'] || row['Clause'];
-        const law = row['법령명'] || row['Law'];
+        const law = row['법령명'] || row['Law'] || row['관련 법령명'];
         const title = row['리스크명'] || row['Title'];
         const desc = row['상세설명'] || row['Description'];
         
@@ -440,11 +441,11 @@ async function startServer() {
     const conditions = [];
     if (department_id) {
       conditions.push("o.department_id = ?");
-      params.push(department_id);
+      params.push(Number(department_id));
     }
     if (session_id) {
       conditions.push("o.session_id = ?");
-      params.push(session_id);
+      params.push(Number(session_id));
     }
     
     if (conditions.length > 0) {
@@ -503,11 +504,11 @@ async function startServer() {
     const conditions = [];
     if (session_id) {
       conditions.push("r.session_id = ?");
-      params.push(session_id);
+      params.push(Number(session_id));
     }
     if (department_id) {
       conditions.push("r.department_id = ?");
-      params.push(department_id);
+      params.push(Number(department_id));
     }
     if (conditions.length > 0) {
       query += " WHERE " + conditions.join(" AND ");
@@ -649,10 +650,27 @@ async function startServer() {
   });
 
   app.get("/api/stats", (req, res) => {
-    const totalRisks = db.prepare("SELECT COUNT(*) as count FROM risks").get() as any;
-    const submittedRisks = db.prepare("SELECT COUNT(*) as count FROM risks WHERE status = 'submitted'").get() as any;
-    const conformity = db.prepare("SELECT COUNT(*) as count FROM audit_results WHERE status = 'conformity'").get() as any;
-    const nonConformity = db.prepare("SELECT COUNT(*) as count FROM audit_results WHERE status = 'non-conformity'").get() as any;
+    const { session_id, department_id } = req.query;
+    
+    let riskConds = [];
+    let params: any[] = [];
+    if (session_id) { riskConds.push("session_id = ?"); params.push(Number(session_id)); }
+    if (department_id) { riskConds.push("department_id = ?"); params.push(Number(department_id)); }
+    
+    let riskWhere = riskConds.length > 0 ? " WHERE " + riskConds.join(" AND ") : "";
+    let riskWhereAnd = riskConds.length > 0 ? riskWhere + " AND " : " WHERE ";
+
+    let auditConds = [];
+    let auditParams: any[] = [];
+    if (session_id) { auditConds.push("r.session_id = ?"); auditParams.push(Number(session_id)); }
+    if (department_id) { auditConds.push("r.department_id = ?"); auditParams.push(Number(department_id)); }
+    
+    let auditWhereAnd = auditConds.length > 0 ? " WHERE " + auditConds.join(" AND ") + " AND " : " WHERE ";
+
+    const totalRisks = db.prepare(`SELECT COUNT(*) as count FROM risks ${riskWhere}`).get(...params) as any;
+    const submittedRisks = db.prepare(`SELECT COUNT(*) as count FROM risks ${riskWhereAnd} status = 'submitted'`).get(...params) as any;
+    const conformity = db.prepare(`SELECT COUNT(*) as count FROM audit_results ar JOIN risks r ON ar.risk_id = r.id ${auditWhereAnd} ar.status = 'conformity'`).get(...auditParams) as any;
+    const nonConformity = db.prepare(`SELECT COUNT(*) as count FROM audit_results ar JOIN risks r ON ar.risk_id = r.id ${auditWhereAnd} ar.status = 'non-conformity'`).get(...auditParams) as any;
 
     res.json({
       total: totalRisks.count,
