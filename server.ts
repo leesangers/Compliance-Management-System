@@ -86,17 +86,48 @@ db.exec(`
     FOREIGN KEY (department_id) REFERENCES departments(id)
   );
 
+  CREATE TABLE IF NOT EXISTS compliance_goals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL,
+    department_id INTEGER NOT NULL,
+    category TEXT,
+    name TEXT NOT NULL,
+    goal_description TEXT,
+    manager TEXT,
+    deadline TEXT,
+    monitoring_timing TEXT,
+    criteria TEXT,
+    method TEXT,
+    status TEXT DEFAULT 'draft',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (session_id) REFERENCES assessment_sessions(id),
+    FOREIGN KEY (department_id) REFERENCES departments(id)
+  );
+
   CREATE TABLE IF NOT EXISTS risks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id INTEGER NOT NULL,
     department_id INTEGER NOT NULL,
-    iso_clause_id INTEGER NOT NULL,
+    iso_clause_id INTEGER,
     obligation_id INTEGER,
+    type TEXT DEFAULT 'compliance', -- 'compliance' or 'ethics'
+    area TEXT,
+    risk_type TEXT,
+    stakeholder TEXT,
+    cause TEXT,
+    scale TEXT,
+    scale_reason TEXT,
+    control1 TEXT,
+    control2 TEXT,
+    evidence_type1 TEXT,
+    evidence_type2 TEXT,
+    monitoring_target TEXT,
+    monitoring_period TEXT,
     title TEXT NOT NULL,
     description TEXT,
     status TEXT DEFAULT 'draft',
     needs_reassessment BOOLEAN DEFAULT 0,
-    previous_content TEXT, -- Store previous obligation content if changed
+    previous_content TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (session_id) REFERENCES assessment_sessions(id),
     FOREIGN KEY (department_id) REFERENCES departments(id),
@@ -104,39 +135,30 @@ db.exec(`
     FOREIGN KEY (obligation_id) REFERENCES compliance_obligations(id)
   );
 
-  CREATE TABLE IF NOT EXISTS controls (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    risk_id INTEGER NOT NULL,
-    activity TEXT NOT NULL,
-    FOREIGN KEY (risk_id) REFERENCES risks(id)
-  );
-
-  CREATE TABLE IF NOT EXISTS evidence_plans (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    control_id INTEGER NOT NULL,
-    document_name TEXT NOT NULL,
-    FOREIGN KEY (control_id) REFERENCES controls(id)
-  );
-
   CREATE TABLE IF NOT EXISTS evidence_files (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    evidence_plan_id INTEGER NOT NULL,
+    target_type TEXT DEFAULT 'risk', -- 'risk' or 'goal'
+    target_id INTEGER NOT NULL,
     file_name TEXT NOT NULL,
     file_path TEXT NOT NULL,
-    uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (evidence_plan_id) REFERENCES evidence_plans(id)
+    description TEXT,
+    control_field TEXT, -- 'control1', 'control2', etc.
+    uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
   CREATE TABLE IF NOT EXISTS audit_results (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    risk_id INTEGER NOT NULL,
-    status TEXT NOT NULL, -- 'conformity', 'non-conformity', 'recommendation'
+    risk_id INTEGER,
+    goal_id INTEGER,
+    status TEXT NOT NULL, -- 'conformity', 'non-conformity'
     comment TEXT,
     auditor_name TEXT,
     audited_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (risk_id) REFERENCES risks(id)
+    FOREIGN KEY (risk_id) REFERENCES risks(id),
+    FOREIGN KEY (goal_id) REFERENCES compliance_goals(id)
   );
 `);
+
 
 // --- Migrations ---
 function runMigrations() {
@@ -144,7 +166,14 @@ function runMigrations() {
     assessment_sessions: ['status'],
     departments: ['org_code'],
     compliance_obligations: ['session_id'],
-    risks: ['session_id', 'obligation_id']
+    risks: [
+      'session_id', 'obligation_id', 'type', 'area', 'risk_type', 
+      'stakeholder', 'cause', 'scale', 'scale_reason', 'control1', 
+      'control2', 'monitoring_target', 'evidence_type', 'monitoring_period'
+    ],
+    evidence_files: ['description', 'target_type', 'target_id', 'evidence_plan_id', 'control_field'],
+    compliance_goals: ['status'],
+    audit_results: ['goal_id']
   };
 
   for (const [table, columns] of Object.entries(tables)) {
@@ -159,6 +188,25 @@ function runMigrations() {
           else if (column === 'org_code') alterQuery += "TEXT UNIQUE";
           else if (column === 'session_id') alterQuery += "INTEGER"; // Allow null initially for migration
           else if (column === 'obligation_id') alterQuery += "INTEGER REFERENCES compliance_obligations(id)";
+          else if (column === 'description') alterQuery += "TEXT";
+          else if (column === 'type') alterQuery += "TEXT DEFAULT 'compliance'";
+          else if (column === 'area') alterQuery += "TEXT";
+          else if (column === 'risk_type') alterQuery += "TEXT";
+          else if (column === 'stakeholder') alterQuery += "TEXT";
+          else if (column === 'cause') alterQuery += "TEXT";
+          else if (column === 'scale') alterQuery += "TEXT";
+          else if (column === 'scale_reason') alterQuery += "TEXT";
+          else if (column === 'control1') alterQuery += "TEXT";
+          else if (column === 'control2') alterQuery += "TEXT";
+          else if (column === 'monitoring_target') alterQuery += "TEXT";
+          else if (column === 'evidence_type1') alterQuery += "TEXT";
+          else if (column === 'evidence_type2') alterQuery += "TEXT";
+          else if (column === 'monitoring_period') alterQuery += "TEXT";
+          else if (column === 'target_type') alterQuery += "TEXT DEFAULT 'risk'";
+          else if (column === 'target_id') alterQuery += "INTEGER";
+          else if (column === 'evidence_plan_id') alterQuery += "INTEGER";
+          else if (column === 'goal_id') alterQuery += "INTEGER";
+          else if (column === 'control_field') alterQuery += "TEXT";
           
           db.exec(alterQuery);
           console.log(`Migration: Added column ${column} to ${table}`);
@@ -175,8 +223,7 @@ runMigrations();
 // Seed initial data if empty
 const deptCount = db.prepare("SELECT COUNT(*) as count FROM departments").get() as { count: number };
 if (deptCount.count === 0) {
-  const insertDept = db.prepare("INSERT INTO departments (name) VALUES (?)");
-  ["인사팀", "재무팀", "구매팀", "IT지원팀", "영업팀", "법무팀"].forEach(name => insertDept.run(name));
+  db.prepare("INSERT INTO departments (name) VALUES (?)").run("CP팀");
 
   const insertClause = db.prepare("INSERT INTO iso_clauses (standard, clause_number, title) VALUES (?, ?, ?)");
   insertClause.run("37301", "4.1", "조직과 그 상황의 이해");
@@ -231,6 +278,11 @@ async function startServer() {
   }
 
   // --- Assessment Sessions ---
+  app.get("/api/departments", (req, res) => {
+    const depts = db.prepare("SELECT * FROM departments").all();
+    res.json(depts);
+  });
+
   app.get("/api/sessions", (req, res) => {
     const sessions = db.prepare("SELECT * FROM assessment_sessions ORDER BY year DESC, created_at DESC").all();
     res.json(sessions);
@@ -287,6 +339,23 @@ async function startServer() {
   app.post("/api/sessions/:id/finalize", (req, res) => {
     const { id } = req.params;
     db.prepare("UPDATE assessment_sessions SET status = 'finalized' WHERE id = ?").run(id);
+    res.json({ success: true });
+  });
+
+  app.delete("/api/sessions/:id", (req, res) => {
+    const { id } = req.params;
+    db.transaction(() => {
+      // Delete child records first
+      db.prepare("DELETE FROM audit_results WHERE risk_id IN (SELECT id FROM risks WHERE session_id = ?)").run(id);
+      db.prepare("DELETE FROM audit_results WHERE goal_id IN (SELECT id FROM compliance_goals WHERE session_id = ?)").run(id);
+      db.prepare("DELETE FROM evidence_files WHERE target_type = 'risk' AND target_id IN (SELECT id FROM risks WHERE session_id = ?)").run(id);
+      db.prepare("DELETE FROM evidence_files WHERE target_type = 'goal' AND target_id IN (SELECT id FROM compliance_goals WHERE session_id = ?)").run(id);
+      
+      db.prepare("DELETE FROM risks WHERE session_id = ?").run(id);
+      db.prepare("DELETE FROM compliance_goals WHERE session_id = ?").run(id);
+      db.prepare("DELETE FROM compliance_obligations WHERE session_id = ?").run(id);
+      db.prepare("DELETE FROM assessment_sessions WHERE id = ?").run(id);
+    })();
     res.json({ success: true });
   });
 
@@ -483,6 +552,16 @@ async function startServer() {
     res.json({ success: true });
   });
 
+  app.delete("/api/obligations/:id", (req, res) => {
+    const { id } = req.params;
+    db.transaction(() => {
+      // Nullify references in risks table
+      db.prepare("UPDATE risks SET obligation_id = NULL WHERE obligation_id = ?").run(id);
+      db.prepare("DELETE FROM compliance_obligations WHERE id = ?").run(id);
+    })();
+    res.json({ success: true });
+  });
+
   app.get("/api/iso-clauses", (req, res) => {
     const clauses = db.prepare("SELECT * FROM iso_clauses").all();
     res.json(clauses);
@@ -513,57 +592,149 @@ async function startServer() {
     if (conditions.length > 0) {
       query += " WHERE " + conditions.join(" AND ");
     }
-    const risks = db.prepare(query).all(...params);
-    res.json(risks);
+    const risks = db.prepare(query).all(...params) as any[];
+
+    return res.json(risks);
+  });
+
+  app.get("/api/goals", (req, res) => {
+    const { session_id, department_id } = req.query;
+    let query = "SELECT g.*, d.name as department_name FROM compliance_goals g JOIN departments d ON g.department_id = d.id";
+    let params = [];
+    const conditions = [];
+    if (session_id) {
+      conditions.push("g.session_id = ?");
+      params.push(Number(session_id));
+    }
+    if (department_id) {
+      conditions.push("g.department_id = ?");
+      params.push(Number(department_id));
+    }
+    if (conditions.length > 0) {
+      query += " WHERE " + conditions.join(" AND ");
+    }
+    const goals = db.prepare(query).all(...params);
+    res.json(goals);
+  });
+
+  app.post("/api/goals", (req, res) => {
+    const { session_id, department_id, category, name, goal_description, manager, deadline, monitoring_timing, criteria, method } = req.body;
+    const result = db.prepare(`
+      INSERT INTO compliance_goals (session_id, department_id, category, name, goal_description, manager, deadline, monitoring_timing, criteria, method)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(session_id, department_id, category, name, goal_description, manager, deadline, monitoring_timing, criteria, method);
+    res.json({ id: result.lastInsertRowid });
+  });
+
+  app.put("/api/goals/:id", (req, res) => {
+    const { id } = req.params;
+    const { name, goal_description, manager, deadline, monitoring_timing, criteria, method, status } = req.body;
+    db.prepare(`
+      UPDATE compliance_goals 
+      SET name = ?, goal_description = ?, manager = ?, deadline = ?, monitoring_timing = ?, criteria = ?, method = ?, status = ?
+      WHERE id = ?
+    `).run(name, goal_description, manager, deadline, monitoring_timing, criteria, method, status || 'draft', id);
+    res.json({ success: true });
+  });
+
+  app.delete("/api/goals/:id", (req, res) => {
+    db.prepare("DELETE FROM compliance_goals WHERE id = ?").run(req.params.id);
+    res.json({ success: true });
   });
 
   app.post("/api/risks", async (req, res) => {
-    const { session_id, department_id, iso_clause_id, obligation_id, title, description, controls } = req.body;
-    const insertRisk = db.prepare("INSERT INTO risks (session_id, department_id, iso_clause_id, obligation_id, title, description) VALUES (?, ?, ?, ?, ?, ?)");
-    const result = insertRisk.run(session_id, department_id, iso_clause_id, obligation_id || null, title, description);
+    const { 
+      session_id, department_id, iso_clause_id, obligation_id, title, description,
+      type, area, risk_type, stakeholder, cause, scale, scale_reason, 
+      control1, control2, evidence_type1, evidence_type2, monitoring_target, monitoring_period
+    } = req.body;
+    
+    const insertRisk = db.prepare(`
+      INSERT INTO risks (
+        session_id, department_id, iso_clause_id, obligation_id, title, description,
+        type, area, risk_type, stakeholder, cause, scale, scale_reason, 
+        control1, control2, evidence_type1, evidence_type2, monitoring_target, monitoring_period
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    
+    const result = insertRisk.run(
+      session_id, department_id, iso_clause_id || null, obligation_id || null, title, description,
+      type || 'compliance', area, risk_type, stakeholder, cause, scale, scale_reason,
+      control1, control2, evidence_type1, evidence_type2, monitoring_target, monitoring_period
+    );
+    
     const riskId = result.lastInsertRowid;
-
-    const dept = db.prepare("SELECT name FROM departments WHERE id = ?").get(department_id) as any;
-    const clause = db.prepare("SELECT standard, clause_number FROM iso_clauses WHERE id = ?").get(iso_clause_id) as any;
-
-    // Sync to Teams Excel
-    await appendToExcel(process.env.TEAMS_EXCEL_RISKS_TABLE || "RisksTable", [
-      new Date().toISOString(),
-      dept?.name || "Unknown",
-      `ISO ${clause?.standard} - ${clause?.clause_number}`,
-      title,
-      description,
-      'draft'
-    ]);
-
-    if (controls && Array.isArray(controls)) {
-      const insertControl = db.prepare("INSERT INTO controls (risk_id, activity) VALUES (?, ?)");
-      const insertPlan = db.prepare("INSERT INTO evidence_plans (control_id, document_name) VALUES (?, ?)");
-      
-      controls.forEach((c: any) => {
-        const ctrlResult = insertControl.run(riskId, c.activity);
-        const ctrlId = ctrlResult.lastInsertRowid;
-        if (c.plans && Array.isArray(c.plans)) {
-          c.plans.forEach((p: any) => {
-            insertPlan.run(ctrlId, p.document_name);
-          });
-        }
-      });
-    }
     res.json({ id: riskId });
   });
 
   app.put("/api/risks/:id", async (req, res) => {
     const { id } = req.params;
-    const { department_id, iso_clause_id, obligation_id, title, description } = req.body;
+    const { 
+      department_id, iso_clause_id, obligation_id, title, description,
+      type, area, risk_type, stakeholder, cause, scale, scale_reason, 
+      control1, control2, evidence_type1, evidence_type2, monitoring_target, monitoring_period,
+      status
+    } = req.body;
     
     db.prepare(`
       UPDATE risks 
-      SET department_id = ?, iso_clause_id = ?, obligation_id = ?, title = ?, description = ?, needs_reassessment = 0 
+      SET department_id = ?, iso_clause_id = ?, obligation_id = ?, title = ?, description = ?,
+          type = ?, area = ?, risk_type = ?, stakeholder = ?, cause = ?, scale = ?, scale_reason = ?,
+          control1 = ?, control2 = ?, evidence_type1 = ?, evidence_type2 = ?, monitoring_target = ?, monitoring_period = ?,
+          status = ?, needs_reassessment = 0 
       WHERE id = ?
-    `).run(department_id, iso_clause_id, obligation_id || null, title, description, id);
+    `).run(
+      department_id, iso_clause_id || null, obligation_id || null, title, description,
+      type, area, risk_type, stakeholder, cause, scale, scale_reason,
+      control1, control2, evidence_type1, evidence_type2, monitoring_target, monitoring_period,
+      status || 'draft', id
+    );
     
     res.json({ success: true });
+  });
+
+  app.get("/api/stats", (req, res) => {
+    const { session_id, department_id } = req.query;
+    let riskQuery = "SELECT status, id FROM risks WHERE session_id = ?";
+    let goalQuery = "SELECT status, id FROM compliance_goals WHERE session_id = ?";
+    let params: any[] = [Number(session_id)];
+
+    if (department_id) {
+      riskQuery += " AND department_id = ?";
+      goalQuery += " AND department_id = ?";
+      params.push(Number(department_id));
+    }
+
+    const risks = db.prepare(riskQuery).all(...params) as any[];
+    const goals = db.prepare(goalQuery).all(...params) as any[];
+    const all = [...risks, ...goals];
+
+    const stats = {
+      total: all.length,
+      submitted: all.filter(r => r.status === 'submitted' || r.status === 'conformity' || r.status === 'non-conformity').length,
+      conformity: 0,
+      nonConformity: 0
+    };
+
+    // Count audits
+    const riskIds = risks.map(r => r.id);
+    const goalIds = goals.map(g => g.id);
+    
+    if (riskIds.length > 0) {
+      const riskAudits = db.prepare(`SELECT status FROM audit_results WHERE risk_id IN (${riskIds.map(() => '?').join(',')})`).all(...riskIds) as any[];
+      stats.conformity += riskAudits.filter(a => a.status === 'conformity').length;
+      stats.nonConformity += riskAudits.filter(a => a.status === 'non-conformity').length;
+    }
+    
+    // For goals, we might need a separate table or check audit_results if we add goal_id there
+    // For now, let's assume audit_results has goal_id or we use a similar logic
+    if (goalIds.length > 0) {
+       const goalAudits = db.prepare(`SELECT status FROM audit_results WHERE goal_id IN (${goalIds.map(() => '?').join(',')})`).all(...goalIds) as any[];
+       stats.conformity += goalAudits.filter(a => a.status === 'conformity').length;
+       stats.nonConformity += goalAudits.filter(a => a.status === 'non-conformity').length;
+    }
+
+    res.json(stats);
   });
 
   app.get("/api/risks/:id/details", (req, res) => {
@@ -571,80 +742,71 @@ async function startServer() {
       SELECT r.*, d.name as department_name, ic.standard, ic.clause_number, ic.title as clause_title,
              o.law_name as obligation_law_name, o.content as obligation_content
       FROM risks r
-      JOIN departments d ON r.department_id = d.id
-      JOIN iso_clauses ic ON r.iso_clause_id = ic.id
+      LEFT JOIN departments d ON r.department_id = d.id
+      LEFT JOIN iso_clauses ic ON r.iso_clause_id = ic.id
       LEFT JOIN compliance_obligations o ON r.obligation_id = o.id
       WHERE r.id = ?
-    `).get(req.params.id);
+    `).get(req.params.id) as any;
 
-    const controls = db.prepare("SELECT * FROM controls WHERE risk_id = ?").all(req.params.id);
-    
-    const fullControls = controls.map((c: any) => {
-      const plans = db.prepare(`
-        SELECT ep.*, ef.file_name, ef.file_path
-        FROM evidence_plans ep
-        LEFT JOIN evidence_files ef ON ep.id = ef.evidence_plan_id
-        WHERE ep.control_id = ?
-      `).all(c.id);
-      return { ...c, plans };
-    });
+    if (!risk) return res.status(404).send("Risk not found");
 
-    const audit = db.prepare("SELECT * FROM audit_results WHERE risk_id = ?").get(req.params.id);
+    const files = db.prepare("SELECT * FROM evidence_files WHERE target_type = 'risk' AND target_id = ?").all(req.params.id);
+    const audit = db.prepare("SELECT * FROM audit_results WHERE risk_id = ? OR goal_id = ?").get(req.params.id, req.params.id);
 
-    res.json({ ...risk, controls: fullControls, audit });
+    res.json({ ...risk, files, audit });
   });
 
   app.post("/api/evidence/upload", upload.single("file"), async (req: any, res) => {
-    const { evidence_plan_id } = req.body;
-    if (!req.file) return res.status(400).send("No file uploaded.");
+    const { target_type, target_id, description, control_field } = req.body;
+    if (!req.file || !target_type || !target_id) return res.status(400).send("Missing file, target_type, or target_id.");
 
-    // Fix Korean filename encoding (latin1 -> utf8)
     const originalName = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
-
-    // 1. Get control info to create folder
-    const plan = db.prepare(`
-      SELECT ep.*, c.activity as control_name 
-      FROM evidence_plans ep 
-      JOIN controls c ON ep.control_id = c.id 
-      WHERE ep.id = ?
-    `).get(evidence_plan_id) as any;
-
-    const controlName = plan?.control_name || "Unknown_Control";
-    const controlDir = path.join(uploadDir, `Control_${plan?.control_id || "unknown"}`);
+    const targetDir = path.join(uploadDir, `${target_type}_${target_id}`);
     
-    if (!fs.existsSync(controlDir)) {
-      fs.mkdirSync(controlDir, { recursive: true });
+    if (!fs.existsSync(targetDir)) {
+      fs.mkdirSync(targetDir, { recursive: true });
     }
 
-    // 2. Move file to control-specific folder
-    const newPath = path.join(controlDir, req.file.filename);
+    const newPath = path.join(targetDir, req.file.filename);
     fs.renameSync(req.file.path, newPath);
 
-    // 3. Save to DB with fixed original name
-    const insertFile = db.prepare("INSERT INTO evidence_files (evidence_plan_id, file_name, file_path) VALUES (?, ?, ?)");
-    insertFile.run(evidence_plan_id, originalName, newPath);
+    const insertFile = db.prepare("INSERT INTO evidence_files (target_type, target_id, file_name, file_path, description) VALUES (?, ?, ?, ?, ?)");
+    insertFile.run(target_type, target_id, originalName, newPath, description || null);
 
-    // 4. Sync to Teams/OneDrive Folder
-    await uploadFileToTeams(controlName, originalName, newPath);
+    if (target_type === 'risk') {
+      db.prepare("UPDATE risks SET status = 'submitted' WHERE id = ? AND status = 'draft'").run(target_id);
+    } else if (target_type === 'goal') {
+      db.prepare("UPDATE compliance_goals SET status = 'submitted' WHERE id = ? AND status = 'draft'").run(target_id);
+    }
 
     res.json({ success: true });
   });
 
   app.post("/api/audit", (req, res) => {
-    const { risk_id, status, comment, auditor_name } = req.body;
-    const existing = db.prepare("SELECT id FROM audit_results WHERE risk_id = ?").get(risk_id);
+    const { risk_id, goal_id, status, comment, auditor_name } = req.body;
+    const existing = risk_id 
+      ? db.prepare("SELECT id FROM audit_results WHERE risk_id = ?").get(risk_id)
+      : db.prepare("SELECT id FROM audit_results WHERE goal_id = ?").get(goal_id);
     
     if (existing) {
-      db.prepare("UPDATE audit_results SET status = ?, comment = ?, auditor_name = ?, audited_at = CURRENT_TIMESTAMP WHERE risk_id = ?")
-        .run(status, comment, auditor_name, risk_id);
+      if (risk_id) {
+        db.prepare("UPDATE audit_results SET status = ?, comment = ?, auditor_name = ?, audited_at = CURRENT_TIMESTAMP WHERE risk_id = ?")
+          .run(status, comment, auditor_name, risk_id);
+      } else {
+        db.prepare("UPDATE audit_results SET status = ?, comment = ?, auditor_name = ?, audited_at = CURRENT_TIMESTAMP WHERE goal_id = ?")
+          .run(status, comment, auditor_name, goal_id);
+      }
     } else {
-      db.prepare("INSERT INTO audit_results (risk_id, status, comment, auditor_name) VALUES (?, ?, ?, ?)")
-        .run(risk_id, status, comment, auditor_name);
+      db.prepare("INSERT INTO audit_results (risk_id, goal_id, status, comment, auditor_name) VALUES (?, ?, ?, ?, ?)")
+        .run(risk_id || null, goal_id || null, status, comment, auditor_name);
     }
 
-    // Update risk status based on audit
-    const riskStatus = status === 'conformity' ? 'submitted' : 'revision';
-    db.prepare("UPDATE risks SET status = ? WHERE id = ?").run(riskStatus, risk_id);
+    const riskStatus = status === 'conformity' ? 'conformity' : 'non-conformity';
+    if (risk_id) {
+      db.prepare("UPDATE risks SET status = ? WHERE id = ?").run(riskStatus, risk_id);
+    } else if (goal_id) {
+      db.prepare("UPDATE compliance_goals SET status = ? WHERE id = ?").run(riskStatus, goal_id);
+    }
 
     res.json({ success: true });
   });
